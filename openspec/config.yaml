@@ -1,32 +1,70 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  Proyecto académico: CC3067 - Laboratorio 3 - 2026.
+  Guía principal: Laboratorio3.md en la raíz del repositorio. La guía es la fuente
+  de requisitos del profesor y debe conservarse sin modificar.
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+  Objetivo: construir una simulación distribuida de algoritmos de enrutamiento
+  mediante nodos independientes que se comuniquen por sockets en una red local.
+  Deben existir implementaciones modulares de Dijkstra, Flooding y Link-State
+  Routing (LSR). La prueba principal en clase será LSR.
 
-# Per-operation guidance (optional)
-# Add advisory guidance for how apply and archive work should be conducted.
-# This is separate from artifact rules above.
-# Example:
-#   operations:
-#     apply:
-#       guidance:
-#         - Keep test summaries concise
-#     archive:
-#       guidance:
-#         - Summarize the archive outcome before finishing
+  Tecnología prevista: Python 3.11+ con dependencias mínimas. No crear código
+  hasta que exista un cambio de OpenSpec aprobado que lo solicite.
+
+  Entorno de prueba: los equipos se conectarán a una red local proporcionada en
+  clase, posiblemente mediante Wi-Fi con access point o mediante cable. Las IP
+  reales pueden cambiar, por lo que la identidad lógica del nodo debe separarse
+  de su IP y puerto configurables.
+
+  Protocolo inicial: mensajes JSON sobre TCP, un objeto JSON por línea. Usar como
+  sobre base exactamente los campos de la guía:
+  proto, type, from, to, ttl, headers y payload.
+  No agregar campos principales al protocolo sin una decisión documentada y una
+  actualización de especificación. Los detalles extensibles deben ir inicialmente
+  en headers o payload.
+
+  Requisitos de diseño: separar forwarding de routing; mantener los algoritmos
+  sin dependencia directa de sockets; usar configuración externa para topología,
+  vecinos, IP, puertos y costos; soportar TTL, deduplicación de flooding,
+  paquetes de control, detección de vecinos caídos, recuperación y recálculo de
+  rutas.
+
+  Calidad esperada: código modular, legible, documentado, testeable y portable.
+  Toda funcionalidad debe incluir pruebas y evidencia verificable. Priorizar
+  interoperabilidad con otros grupos y comportamiento observable mediante logs.
+
+rules:
+  proposal:
+    - Incluir secciones de alcance, no alcance, riesgos, criterios de éxito y trazabilidad con Laboratorio3.md.
+    - No proponer código si el cambio es únicamente de planificación o documentación.
+    - Declarar cualquier decisión pendiente que requiera acuerdo con otros grupos.
+
+  design:
+    - Separar claramente identidad lógica de nodo, dirección IP y puerto.
+    - Explicar flujo de forwarding, routing, mensajes JSON y concurrencia cuando aplique.
+    - Mantener compatibilidad con el sobre JSON definido en Laboratorio3.md.
+
+  specs:
+    - Escribir requisitos verificables con escenarios WHEN/THEN.
+    - Incluir escenarios normales, errores, duplicados, TTL agotado, nodo caído y recuperación cuando sean relevantes.
+    - No asumir una topología o IP fija dentro del código.
+
+  tasks:
+    - Dividir el trabajo en tareas pequeñas, ordenadas y verificables.
+    - Incluir tareas de pruebas junto con cada funcionalidad.
+    - No marcar una tarea como completa sin evidencia de verificación.
+    - Mantener Dijkstra, Flooding y LSR como módulos independientes y reutilizables.
+
+operations:
+  apply:
+    guidance:
+      - Implementar únicamente tareas aprobadas del cambio activo.
+      - Ejecutar las pruebas relevantes antes de marcar tareas completas.
+      - Reportar archivos modificados, pruebas ejecutadas y limitaciones pendientes.
+
+  archive:
+    guidance:
+      - Archivar solo si todas las tareas están completas y verificadas.
+      - Resumir resultados, evidencia de pruebas y decisiones pendientes antes de archivar.
