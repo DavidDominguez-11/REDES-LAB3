@@ -1,0 +1,20 @@
+{
+  "node_id": "B",
+  "listen": { "host": "127.0.0.1", "port": 6001 },
+  "mode": "lsr",
+  "neighbors": [
+    { "node_id": "A", "host": "127.0.0.1", "port": 6000, "cost": 4 },
+    { "node_id": "C", "host": "127.0.0.1", "port": 6002, "cost": 2 },
+    { "node_id": "D", "host": "127.0.0.1", "port": 6003, "cost": 5 },
+    { "node_id": "E", "host": "127.0.0.1", "port": 6004, "cost": 10 }
+  ],
+  "params": {
+    "initial_ttl": 5,
+    "hello_interval_sec": 1.0,
+    "hello_timeout_sec": 0.5,
+    "hello_max_failures": 3,
+    "dedup_cache_ttl_sec": 30.0,
+    "log_level": "INFO"
+  },
+  "topology_file": "config/topologies/local_test_5nodes.json"
+}

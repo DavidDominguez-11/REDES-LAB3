@@ -1,0 +1,14 @@
+{
+  "_comment": "Topologia de PRUEBA LOCAL, no oficial. Pendiente sustituir por la topologia real del dia de la demo (ver docs/protocolo.md, seccion topologia). Ruta optima A->E: A-C-E costo 7. Si se cae el enlace C-E, la ruta alterna es A-C-B-D-E costo 11.",
+  "nodes": ["A", "B", "C", "D", "E"],
+  "links": [
+    { "a": "A", "b": "B", "cost": 4 },
+    { "a": "A", "b": "C", "cost": 1 },
+    { "a": "B", "b": "C", "cost": 2 },
+    { "a": "B", "b": "D", "cost": 5 },
+    { "a": "B", "b": "E", "cost": 10 },
+    { "a": "C", "b": "D", "cost": 8 },
+    { "a": "C", "b": "E", "cost": 6 },
+    { "a": "D", "b": "E", "cost": 3 }
+  ]
+}
