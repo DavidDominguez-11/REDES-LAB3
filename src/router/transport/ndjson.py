@@ -1,34 +1,48 @@
-"""Framing NDJSON: cada paquete es una línea JSON terminada en '\\n'.
-
-TCP es un stream de bytes sin límites de mensaje, así que este buffer
-acumula bytes recibidos y va emitiendo líneas completas conforme llegan,
-sin asumir que un recv() corresponde a un paquete completo.
-"""
+"""NDJSON UTF-8 con límite de 65536 bytes, sin contar el delimitador."""
 from __future__ import annotations
+
+import logging
+
+logger = logging.getLogger(__name__)
+MAX_LINE_BYTES = 65536
 
 
 class LineBuffer:
-    """Acumula bytes y va liberando líneas completas (sin el '\\n')."""
-
-    def __init__(self) -> None:
-        self._buffer = b""
+    def __init__(self, max_line_bytes: int = MAX_LINE_BYTES) -> None:
+        self._buffer = bytearray()
+        self._discarding = False
+        self._max_line_bytes = max_line_bytes
 
     def feed(self, chunk: bytes) -> list[bytes]:
-        """Agrega bytes recibidos y devuelve las líneas completas nuevas."""
-        self._buffer += chunk
-        lines: list[bytes] = []
-        while b"\n" in self._buffer:
-            line, self._buffer = self._buffer.split(b"\n", 1)
-            lines.append(line)
+        lines = []
+        start = 0
+        while start < len(chunk):
+            end = chunk.find(b"\n", start)
+            complete = end >= 0
+            end = end if complete else len(chunk)
+            if not self._discarding:
+                if len(self._buffer) + end - start > self._max_line_bytes:
+                    logger.warning("Línea NDJSON mayor que %d bytes; se descarta", self._max_line_bytes)
+                    self._buffer.clear()
+                    self._discarding = True
+                else:
+                    self._buffer.extend(chunk[start:end])
+            if complete:
+                if not self._discarding:
+                    lines.append(bytes(self._buffer))
+                self._buffer.clear()
+                self._discarding = False
+            start = end + 1
         return lines
 
     def pending_bytes(self) -> int:
-        """Bytes acumulados que aún no forman una línea completa."""
         return len(self._buffer)
 
 
 def encode_line(json_line: str) -> bytes:
-    """Codifica una línea JSON (sin '\\n') a bytes listos para enviar por socket."""
     if "\n" in json_line:
-        raise ValueError("La línea JSON no debe contener '\\n' interno")
-    return (json_line + "\n").encode("utf-8")
+        raise ValueError("La línea JSON no debe contener saltos de línea internos")
+    data = json_line.encode("utf-8")
+    if len(data) > MAX_LINE_BYTES:
+        raise ValueError("La línea JSON supera 65536 bytes")
+    return data + b"\n"

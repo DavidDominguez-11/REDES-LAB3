@@ -14,7 +14,8 @@ def test_forwards_to_all_neighbors_except_sender():
     assert set(decision.forward_to) == {"C", "D"}
     assert decision.deliver_locally is False
     assert decision.forwarded_packet.ttl == 2
-    assert decision.forwarded_packet.from_ == "B"
+    assert decision.forwarded_packet.from_ == "A"
+    assert decision.forwarded_packet.header("via") == "B"
 
 
 def test_delivers_locally_when_addressed_to_self_and_stops_forwarding():

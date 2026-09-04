@@ -45,14 +45,20 @@ class RoutingEngine:
         if self.mode == "dijkstra":
             return dict(self._static_table)
         if self.mode == "lsr" and self._lsr:
-            return dict(self._lsr.table)
+            return self._lsr.routes()
         return {}
 
     # --- Solo aplica en modo lsr ---
-    def apply_lsp(self, origin: str, seq: int, neighbors: dict) -> bool:
+    def apply_lsp(self, origin: str, seq: int, neighbors: dict, age_s: float = 0) -> bool:
         if self._lsr is None:
             raise RuntimeError("apply_lsp solo es válido en modo 'lsr'")
-        return self._lsr.apply_lsp(origin, seq, neighbors)
+        return self._lsr.apply_lsp(origin, seq, neighbors, age_s)
+
+    def expire(self) -> list:
+        return self._lsr.expire() if self._lsr else []
+
+    def lsdb_snapshot_with_age(self) -> list:
+        return self._lsr.snapshot_with_age() if self._lsr else []
 
     def next_own_seq(self) -> int:
         if self._lsr is None:
@@ -62,4 +68,15 @@ class RoutingEngine:
     def known_lsp_origins(self) -> list:
         if self._lsr is None:
             return []
-        return self._lsr.lsdb.known_origins()
+        return self._lsr.known_origins()
+
+    def lsdb_snapshot(self) -> list:
+        """Copia de todos los LSP conocidos: [(origin, seq, neighbors), ...].
+
+        La usa el forwarding para sincronizar la LSDB con un vecino que acaba
+        de aparecer y que por lo tanto no recibió los LSP difundidos antes.
+        Vacía fuera del modo `lsr`.
+        """
+        if self._lsr is None:
+            return []
+        return self._lsr.snapshot()

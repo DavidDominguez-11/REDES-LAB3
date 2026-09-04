@@ -1,17 +1,36 @@
 {
   "node_id": "A",
-  "listen": { "host": "127.0.0.1", "port": 6000 },
+  "listen": {
+    "host": "0.0.0.0",
+    "port": 5000
+  },
+  "advertised_host": "10.0.0.1",
+  "network_port": 5000,
   "mode": "lsr",
   "neighbors": [
-    { "node_id": "B", "host": "127.0.0.1", "port": 6001, "cost": 4 },
-    { "node_id": "C", "host": "127.0.0.1", "port": 6002, "cost": 1 }
+    {
+      "node_id": "B",
+      "host": "10.0.0.2",
+      "port": 5000,
+      "cost": 4.8
+    },
+    {
+      "node_id": "C",
+      "host": "10.0.0.3",
+      "port": 5000,
+      "cost": 1.2
+    }
   ],
+  "addresses": {
+    "G": "10.0.0.7:5000"
+  },
   "params": {
-    "initial_ttl": 5,
-    "hello_interval_sec": 2.0,
-    "hello_timeout_sec": 1.0,
+    "initial_ttl": 16,
+    "hello_interval_sec": 2,
+    "hello_timeout_sec": 1,
     "hello_max_failures": 3,
-    "dedup_cache_ttl_sec": 30.0,
+    "dedup_cache_ttl_sec": 30,
+    "lsp_refresh_interval_sec": 10,
     "log_level": "INFO"
   },
   "topology_file": null

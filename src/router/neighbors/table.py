@@ -8,6 +8,7 @@ el estado; esta clase solo lo almacena y expone consultas simples.
 from __future__ import annotations
 
 import threading
+import math
 from dataclasses import dataclass, field
 
 
@@ -16,7 +17,7 @@ class NeighborState:
     node_id: str
     host: str
     port: int
-    cost: int
+    cost: float
     is_up: bool = True
     consecutive_failures: int = 0
     last_rtt_sec: float | None = None
@@ -33,6 +34,15 @@ class NeighborTable:
     def all_ids(self) -> list:
         with self._lock:
             return list(self._neighbors.keys())
+
+    def update_cost(self, node_id: str, cost: float) -> bool:
+        if isinstance(cost, bool) or not isinstance(cost, (int, float)) or not math.isfinite(cost) or cost < 0:
+            raise ValueError("El costo debe ser finito y no negativo")
+        with self._lock:
+            neighbor = self._neighbors[node_id]
+            changed = neighbor.cost != cost
+            neighbor.cost = cost
+            return changed
 
     def get(self, node_id: str) -> NeighborState | None:
         with self._lock:

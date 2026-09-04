@@ -8,6 +8,7 @@ No conoce nada de sockets ni de cómo se obtuvo la topología: solo recibe un
 from __future__ import annotations
 
 import heapq
+import math
 from dataclasses import dataclass
 
 
@@ -15,11 +16,11 @@ from dataclasses import dataclass
 class RouteEntry:
     destination: str
     next_hop: str
-    cost: int
+    cost: float
 
 
 def shortest_paths(source: str, edges: dict) -> dict:
-    """Dijkstra clásico. `edges` es dict[node] -> dict[neighbor] -> cost (no dirigido).
+    """Dijkstra clásico. `edges` es dict[node] -> dict[neighbor] -> cost. Respeta la dirección de cada arista (LSR aporta aristas salientes).
 
     Devuelve dict[node] -> (cost, path) donde `path` es la lista de nodos
     desde `source` hasta `node`, ambos inclusive.
@@ -27,6 +28,9 @@ def shortest_paths(source: str, edges: dict) -> dict:
     if source not in edges:
         raise ValueError(f"El nodo origen '{source}' no está en la topología")
 
+    if any(isinstance(cost, bool) or not isinstance(cost, (int, float)) or
+           not math.isfinite(cost) or cost < 0 for links in edges.values() for cost in links.values()):
+        raise ValueError("Dijkstra requiere costos finitos no negativos")
     distances = {node: float("inf") for node in edges}
     distances[source] = 0
     previous: dict = {source: None}
@@ -75,5 +79,5 @@ def build_routing_table(source: str, edges: dict) -> dict:
         if dest == source:
             continue
         next_hop = path[1] if len(path) > 1 else dest
-        table[dest] = RouteEntry(destination=dest, next_hop=next_hop, cost=int(cost))
+        table[dest] = RouteEntry(destination=dest, next_hop=next_hop, cost=cost)
     return table

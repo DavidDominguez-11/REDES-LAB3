@@ -33,14 +33,15 @@ def process_incoming_packet(
     node_id: str,
     neighbor_ids: list,
     exclude_neighbor_id: str,
-    dedup_cache: DedupCache,
+    dedup_cache: DedupCache | None,
 ) -> FloodingDecision:
     """Decide qué hacer con un paquete recibido, según las reglas de flooding."""
-    if dedup_cache.check_and_mark(packet.id):
-        return FloodingDecision(False, [], None, "duplicate")
-
     if packet.ttl <= 0:
         return FloodingDecision(False, [], None, "ttl_expired")
+
+    # Los LSP ya fueron deduplicados por (origin, seq) en la LSDB.
+    if dedup_cache is not None and dedup_cache.check_and_mark(packet.id):
+        return FloodingDecision(False, [], None, "duplicate")
 
     is_broadcast = packet.to == "*"
     is_for_me = packet.to == node_id
@@ -52,7 +53,9 @@ def process_incoming_packet(
     forward_to: list = []
     forwarded_packet: Optional[Packet] = None
     if should_forward:
-        forwarded_packet = packet.with_ttl_decremented(new_from=node_id).with_hop_appended(node_id)
+        if packet.ttl <= 1:
+            return FloodingDecision(deliver_locally, [], None, "ttl_expired")
+        forwarded_packet = packet.forwarded_by(node_id)
         forward_to = [n for n in neighbor_ids if n != exclude_neighbor_id]
 
     return FloodingDecision(deliver_locally, forward_to, forwarded_packet, None)
@@ -64,5 +67,7 @@ def originate_broadcast(packet: Packet, neighbor_ids: list, dedup_cache: DedupCa
     No decrementa TTL: el TTL inicial ya representa el número de saltos
     permitidos a partir del primer envío, no del origen.
     """
+    if packet.ttl <= 0:
+        return FloodingDecision(False, [], None, "ttl_expired")
     dedup_cache.mark_seen(packet.id)
     return FloodingDecision(deliver_locally=False, forward_to=list(neighbor_ids), forwarded_packet=packet, dropped_reason=None)

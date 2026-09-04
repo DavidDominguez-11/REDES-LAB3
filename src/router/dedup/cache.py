@@ -1,6 +1,6 @@
-"""Caché de deduplicación de paquetes por `id`.
+"""Caché de deduplicación de mensajes por `msg_id`.
 
-Usada por flooding (y por LSR, que reenvía LSPs vía flooding) para no
+Usada por flooding de mensajes para no
 reprocesar ni reenviar un paquete ya visto -- así se evitan loops.
 """
 from __future__ import annotations

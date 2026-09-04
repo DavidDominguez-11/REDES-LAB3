@@ -1,0 +1,71 @@
+{
+  "_comment": "Topologia de la Imagen 1 de la guia del laboratorio (CC3067 Lab 3 2026), extraida del PDF original. 9 nodos, 11 enlaces no dirigidos. El dia de la demo la topologia del salon puede diferir: verificar con el profesor y con los demas grupos antes de conectar.",
+  "nodes": [
+    "A",
+    "B",
+    "C",
+    "D",
+    "E",
+    "F",
+    "G",
+    "H",
+    "I"
+  ],
+  "links": [
+    {
+      "a": "A",
+      "b": "B",
+      "cost": 7
+    },
+    {
+      "a": "A",
+      "b": "I",
+      "cost": 1
+    },
+    {
+      "a": "A",
+      "b": "C",
+      "cost": 7
+    },
+    {
+      "a": "B",
+      "b": "F",
+      "cost": 2
+    },
+    {
+      "a": "C",
+      "b": "D",
+      "cost": 5
+    },
+    {
+      "a": "I",
+      "b": "D",
+      "cost": 6
+    },
+    {
+      "a": "F",
+      "b": "D",
+      "cost": 1
+    },
+    {
+      "a": "F",
+      "b": "H",
+      "cost": 4
+    },
+    {
+      "a": "F",
+      "b": "G",
+      "cost": 3
+    },
+    {
+      "a": "D",
+      "b": "E",
+      "cost": 1
+    },
+    {
+      "a": "E",
+      "b": "G",
+      "cost": 4
+    }
+  ]
+}

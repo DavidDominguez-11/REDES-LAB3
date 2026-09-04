@@ -64,3 +64,22 @@ def test_lsr_converges_to_same_table_as_static_dijkstra():
         assert engine.table[dest].next_hop == entry.next_hop
     assert engine.next_hop("E") == "C"
     assert engine.route_entry("E").cost == 7
+
+
+def test_snapshot_devuelve_el_ultimo_lsp_de_cada_origen():
+    engine = LsrRoutingEngine("A")
+    engine.apply_lsp("B", seq=1, neighbors={"A": 1})
+    engine.apply_lsp("B", seq=4, neighbors={"A": 1, "C": 2})
+    engine.apply_lsp("C", seq=2, neighbors={"B": 2})
+
+    snapshot = {origin: (seq, neighbors) for origin, seq, neighbors in engine.snapshot()}
+    assert snapshot["B"] == (4, {"A": 1, "C": 2})
+    assert snapshot["C"] == (2, {"B": 2})
+
+
+def test_snapshot_es_una_copia_independiente():
+    engine = LsrRoutingEngine("A")
+    engine.apply_lsp("B", seq=1, neighbors={"A": 1})
+    _origin, _seq, neighbors = engine.snapshot()[0]
+    neighbors["Z"] = 99
+    assert engine.snapshot()[0][2] == {"A": 1}

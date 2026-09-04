@@ -1,144 +1,212 @@
-# Protocolo de la red (v1)
+# Protocolo de la red — Laboratorio 3
 
-## Framing sobre TCP
+Especificación del formato en el cable para nodos de enrutamiento
+interoperables. Define cómo un nodo descubre a sus vecinos, mide el enlace que
+los une, difunde el estado de sus enlaces y entrega mensajes de usuario.
 
-Cada nodo mantiene conexiones TCP persistentes con sus vecinos configurados
-(reconectables si se caen). Cada paquete se serializa como **una línea JSON
-compacta terminada en `\n`** (NDJSON: newline-delimited JSON). Un socket
-puede llevar múltiples paquetes en secuencia; el receptor bufferea bytes
-hasta encontrar `\n` y ahí parsea (ver `src/router/transport/ndjson.py`).
+Cualquier implementación que respete este documento puede intercambiar tráfico
+con otra, sin importar el lenguaje en que esté escrita.
 
-Un paquete nunca contiene `\n` dentro de su JSON (se serializa sin
-pretty-print). Si una línea recibida no es JSON válido o le faltan campos
-requeridos, se descarta y se loguea; **no se cae el nodo ni se cierra la
-conexión** por un paquete malformado aislado.
+## Alcance por algoritmo
 
-## Envoltura base
+El formato del paquete es **el mismo para los tres algoritmos**. Lo que cambia es
+el valor de `proto` y qué se hace con cada tipo de paquete:
+
+| | `flooding` | `dijkstra` | `lsr` |
+|---|---|---|---|
+| `hello` / `echo` | sí | sí | sí |
+| `info` (LSP) | no se origina | no se origina | sí |
+| `message` | se propaga a todos los vecinos | unicast por tabla | unicast por tabla |
+
+Todos los nodos de una misma red deben correr el mismo algoritmo.
+
+## Transporte
+
+- TCP, codificación UTF-8.
+- **Un objeto JSON por línea**, terminado en `\n` (NDJSON/JSONL). El receptor
+  acumula bytes hasta el delimitador y procesa cada línea por separado.
+- Puerto por defecto **5000**, tomado de configuración y nunca fijado en el
+  código.
+- **Máximo 65536 bytes por línea.** Una línea mayor se descarta y se registra.
+- Una implementación puede abrir una conexión TCP por envío o mantener una por
+  vecino; ambas cumplen la especificación.
+
+> **Recomendación.** Conviene leer también de las conexiones salientes, no solo
+> de las entrantes: algunas implementaciones responden por el mismo socket que
+> recibieron, en vez de abrir una conexión nueva hacia la dirección de `from`.
+> Soportar las dos formas evita perder respuestas en silencio.
+
+## Envelope común
 
 ```json
 {
   "version": 1,
-  "id": "8f14e45f-ceea-4f1b-9f7e-3c0a6a2d1a4c",
   "proto": "lsr",
-  "type": "hello",
-  "from": "A",
-  "to": "B",
-  "ttl": 5,
-  "headers": [],
-  "payload": {}
+  "type": "message",
+  "from": "10.0.0.1:5000",
+  "to": "10.0.0.7:5000",
+  "ttl": 16,
+  "headers": [{"msg_id": "uuid-v4"}, {"checksum": "crc32-hex"}],
+  "payload": "hola G"
 }
 ```
 
-| Campo | Obligatorio | Descripción |
+Los ocho campos son obligatorios.
+
+| Campo | Valor |
+|---|---|
+| `version` | entero; actualmente `1` |
+| `proto` | `"lsr"`, `"dijkstra"` o `"flooding"` — el algoritmo que corre la red |
+| `type` | `hello`, `echo`, `info` o `message`, **siempre en minúscula** |
+| `from` | `IP:puerto` del originador (no del salto anterior) |
+| `to` | destino final en `message`; vecino directo en `hello`/`echo`; **`"*"`** en un LSP inundado |
+| `ttl` | entero positivo, inicial **16**; cada reenvío lo decrementa; a `0` se descarta |
+| `headers` | lista de objetos de una sola clave; los desconocidos se ignoran |
+| `payload` | **string** en `message`; **objeto** en `hello`, `echo` e `info` |
+
+Una dirección sin puerto se completa con el puerto configurado de la red, de
+modo que `"10.0.0.7"` y `"10.0.0.7:5000"` designan al mismo nodo cuando el
+puerto común es 5000.
+
+### Headers
+
+| Header | Aplica a | Uso |
 |---|---|---|
-| `version` | No (default `1`) | Versión del protocolo. Si falta, se asume `1` para no romper interoperabilidad con grupos que no lo incluyan. |
-| `id` | Sí | UUID único del paquete, generado por quien lo origina. **No cambia** al reenviarse; es la clave de deduplicación. |
-| `proto` | Sí | `"dijkstra"` \| `"flooding"` \| `"lsr"` |
-| `type` | Sí | `"hello"` \| `"echo"` \| `"message"` \| `"info"` |
-| `from` | Sí | Ver nota sobre semántica de `from`/`to` abajo. |
-| `to` | Sí | Destino final, o `"*"` como convención de broadcast lógico (usada por los LSP). |
-| `ttl` | Sí | Entero, decrementado en cada salto. Al llegar a un nodo con `ttl <= 0`, el paquete se descarta. |
-| `headers` | No (default `[]`) | Lista extensible. Se usa `{"hops": [...]}` como traza opcional de saltos. |
-| `payload` | Sí | Contenido, forma depende de `type` (ver ejemplos abajo). |
+| `msg_id` | todos | UUID del paquete lógico; se conserva al reenviar |
+| `checksum` | todos | CRC32 del `payload` |
+| `t0` | `hello`, `echo` | marca de tiempo para calcular el RTT |
+| `via` | `info`, `message` | dirección del salto anterior; cambia en cada reenvío |
+| `trace` | `message` | direcciones ya recorridas; se agrega el nodo al reenviar |
 
-### Nota importante sobre `from` / `to`
+`msg_id` y `checksum` son obligatorios. `via` y `trace` los debe escribir todo
+nodo que reenvíe, pero un receptor debe aceptar paquetes que no los traigan.
 
-**Esta implementación usa `from` como el emisor del salto actual** (se
-actualiza en cada retransmisión al `node_id` de quien reenvía), no como el
-origen absoluto del mensaje. Esto es lo que permite a cada nodo saber a qué
-vecino no debe reenviar de vuelta un paquete de flooding, sin necesitar
-información adicional fuera de la envoltura. El origen absoluto de un LSP se
-preserva aparte, en `payload.origin` (ver más abajo), y el origen de un
-mensaje de usuario queda registrado en `headers[].hops[0]` si se usa la
-traza de saltos.
+### Checksum
 
-`from`/`to` son strings opacos para el resto del sistema — no se asume
-ningún formato específico. En las pruebas locales se usan IDs lógicos de
-nodo (`"A"`, `"B"`, ...). **El formato final (IP:puerto vs ID lógico) para
-la interconexión en clase queda pendiente de coordinación con los demás
-grupos** — cambiarlo solo afecta la capa de configuración/mapeo de vecinos,
-no la lógica de los algoritmos.
+`checksum` es el CRC32 de la **serialización canónica** del `payload`, definida
+así:
+
+- si el payload es **texto**, se toma el texto crudo en UTF-8, **sin comillas**;
+- si es **objeto o lista**, se serializa como JSON con **claves ordenadas
+  alfabéticamente**, separadores compactos (`,` y `:`) y sin escapar los
+  caracteres no ASCII;
+- el resultado se expresa en **hexadecimal, 8 dígitos, minúsculas**.
+
+Ordenar las claves es lo que permite que dos nodos que construyan el mismo
+payload en distinto orden obtengan el mismo valor.
+
+**Vectores de prueba.** Una implementación correcta reproduce estos dos:
+
+| Payload | Checksum |
+|---|---|
+| `"hola G"` | `0bded535` |
+| `{"origin":"10.0.0.1:5000","seq":7,"neighbors":[{"id":"10.0.0.2:5000","weight":4.8}]}` | `cbd08356` |
+
+> **Un checksum que no coincide se registra, pero no descarta el paquete.** El
+> campo debe viajar siempre; descartar por una discrepancia haría que dos
+> implementaciones con interpretaciones distintas de la serialización quedaran
+> incomunicadas, en vez de degradarse a un aviso en el log.
+
+De la misma forma, un `version` ausente o distinto de `1` no debe usarse para
+rechazar un paquete: se registra y se procesa.
 
 ## Tipos de paquete
 
-### `hello` — sondeo de vecino / health check
+### `hello` y `echo`
+
+Se envían solo a vecinos directos, con `ttl: 1`. **Nunca se reenvían.**
 
 ```json
-{"version":1,"id":"a1b2...01","proto":"lsr","type":"hello","from":"A","to":"B","ttl":1,"headers":[],"payload":{"seq":42,"sent_at":1756500000.123}}
+{"version":1,"proto":"lsr","type":"hello","from":"10.0.0.1:5000","to":"10.0.0.2:5000",
+ "ttl":1,"headers":[{"msg_id":"..."},{"t0":1770000000.125},{"checksum":"..."}],
+ "payload":{"listen_port":5000}}
 ```
 
-- `ttl: 1`: nunca se reenvía, solo va a un vecino directo.
-- `payload.seq`: contador incremental del emisor, para descartar ecos
-  fuera de orden o tardíos.
-- `payload.sent_at`: timestamp de envío (epoch float).
+El `echo` **conserva el mismo `msg_id` y el mismo `t0`** e invierte `from` y
+`to`. Quien envió el `hello` calcula `RTT = ahora - t0`.
 
-### `echo` — respuesta al `hello`
+Como el `t0` se devuelve sin modificar, el cálculo ocurre siempre contra un solo
+reloj —el del emisor del `hello`— y no requiere que las máquinas estén
+sincronizadas entre sí.
+
+Un vecino se considera activo mientras se le siga oyendo. Al dejar de responder
+durante el tiempo de espera configurado se marca como caído, lo que cambia el
+estado del enlace y obliga a recalcular rutas.
+
+### `info` (LSP)
 
 ```json
-{"version":1,"id":"a1b2...02","proto":"lsr","type":"echo","from":"B","to":"A","ttl":1,"headers":[],"payload":{"seq":42,"sent_at":1756500000.123,"echoed_at":1756500000.126}}
+{"version":1,"proto":"lsr","type":"info","from":"10.0.0.1:5000","to":"*","ttl":16,
+ "headers":[{"msg_id":"..."},{"checksum":"..."},{"via":"10.0.0.2:5000"}],
+ "payload":{"origin":"10.0.0.1:5000","seq":7,"age_s":0,
+            "neighbors":[{"id":"10.0.0.2:5000","weight":4.8}]}}
 ```
 
-- Copia `seq` y `sent_at` del `hello` original, agrega `echoed_at`.
-- Quien recibe el `echo` calcula RTT = `now() - sent_at` para monitoreo. El
-  RTT **no** se usa para modificar costos de ruta automáticamente, solo
-  para observabilidad/diagnóstico.
+Campos del payload:
 
-### `message` — dato de usuario
+| Campo | Significado |
+|---|---|
+| `origin` | dirección del nodo que describe sus enlaces |
+| `seq` | número de secuencia, creciente por cada origen |
+| `age_s` | segundos transcurridos desde que se originó |
+| `neighbors` | lista de objetos `{"id": dirección, "weight": costo}` |
+
+Reglas de procesamiento:
+
+1. La identidad lógica de un LSP es **`(origin, seq)`**, no el `msg_id`.
+2. Se guarda y se reenvía **solo si `seq` es mayor** que el último aceptado para
+   ese `origin`. Un `seq` igual o menor se descarta sin reenviar: es lo que
+   corta la inundación.
+3. Se reenvía a los vecinos activos **excepto** al indicado por `via` o al de la
+   conexión por la que llegó.
+4. Cada LSP registra su hora local de recepción.
+5. Una entrada **expira a los 30 segundos** sin actualizarse; al expirar se
+   elimina, se reconstruye la topología y se recalculan las rutas.
+6. Cada nodo origina un LSP al iniciar, **cada 10 segundos**, y cada vez que
+   cambia el estado o el costo de un vecino.
+
+Con el conjunto de LSPs recibidos, cada nodo reconstruye la topología —cada LSP
+aporta las aristas salientes de su origen— y calcula sus rutas con Dijkstra
+desde sí mismo.
+
+**Sobre el formato de `neighbors`:** se **emite** siempre como lista de objetos
+`{id, weight}`. Al **recibir** se recomienda aceptar además las variantes
+equivalentes que puedan producir otras implementaciones (un diccionario
+`{dirección: costo}`, la clave `links` en lugar de `neighbors`, los nombres
+`node`/`cost`, o el payload serializado como texto JSON). Emitir una sola forma
+y aceptar varias mantiene el formato inequívoco sin volverse frágil.
+
+### `message`
 
 ```json
-{"version":1,"id":"b2c3...03","proto":"lsr","type":"message","from":"A","to":"D","ttl":5,"headers":[{"hops":["A"]}],"payload":"Hola, este es un mensaje de prueba"}
+{"version":1,"proto":"lsr","type":"message","from":"10.0.0.1:5000","to":"10.0.0.7:5000",
+ "ttl":16,"headers":[{"msg_id":"..."},{"checksum":"..."},{"trace":["10.0.0.1:5000"]}],
+ "payload":"Mensaje de prueba"}
 ```
 
-- `payload` es **texto plano directo** (no un objeto anidado).
-- Si `to == node_id` del receptor: se entrega/imprime, no se reenvía más.
-- Si no: se decrementa TTL, se actualiza `from` al `node_id` de quien
-  reenvía, se anexa el `node_id` a `headers[].hops` (si existe ese header,
-  o se crea) y se envía al siguiente salto (según el modo: next-hop de la
-  tabla de ruteo en `dijkstra`/`lsr`, o todos los vecinos menos el emisor
-  en `flooding`).
+- Si `to` es la dirección propia, el mensaje se entrega y **no** se reenvía.
+- Si no, se decrementa el TTL, se actualizan `via` y `trace`, y se reenvía: al
+  `next_hop` de la tabla en LSR y Dijkstra, o a todos los vecinos menos el
+  remitente en flooding.
+- Si no hay ruta o el TTL llega a `0`, se descarta y se registra localmente.
 
-### `info` — LSP (Link State Packet), usado por LSR
+No existen tipos `ERROR` ni `ACK`: el conjunto de tipos se limita a los cuatro
+definidos arriba.
 
-```json
-{"version":1,"id":"c3d4...04","proto":"lsr","type":"info","from":"A","to":"*","ttl":5,"headers":[],"payload":{"origin":"A","seq":7,"neighbors":{"B":4,"C":1}}}
-```
+En flooding, la detección de duplicados es obligatoria o un paquete circula
+indefinidamente entre los ciclos de la topología. Se deduplica por `msg_id`; si
+un paquete llega sin él, sirve un hash de `(from, to, type, payload)`. **El TTL
+nunca debe entrar en ese identificador**, porque cambia en cada salto y haría
+que cada copia pareciera un paquete nuevo.
 
-- `payload.origin`: nodo que originó este LSP (constante, no cambia al
-  reenviarse, a diferencia de `from`).
-- `payload.seq`: número de secuencia de `origin`. Un LSP con `seq` menor o
-  igual al último visto de ese `origin` **se descarta sin aplicar, sin
-  reenviar y sin disparar recálculo** — así se evita procesar/propagar LSPs
-  viejos o repetidos indefinidamente.
-- `payload.neighbors`: mapa vecino → costo, solo de vecinos **activos** en
-  el momento en que `origin` generó el LSP.
-- `to: "*"`: convención de broadcast lógico. **Pendiente de confirmar con
-  los demás grupos** si aceptan este valor u otra convención.
+## Extensión recomendada: reinicio de un nodo
 
-## Deduplicación
+Con la regla de aceptar un LSP solo si su `seq` es estrictamente mayor, un nodo
+que se reinicia queda ignorado indefinidamente: vuelve a `seq = 1` y el resto de
+la red conserva un número mucho más alto para ese origen, de modo que descarta
+todos sus anuncios hasta que la entrada expire.
 
-Cada nodo mantiene una caché de `id`s de paquetes ya procesados (usada para
-`message` en modo flooding e `info`/LSP). Un `id` repetido se descarta sin
-reprocesar ni reenviar. Las entradas expiran tras un intervalo configurable
-(`dedup_cache_ttl_sec`) para no crecer sin límite.
-Implementación: `src/router/dedup/cache.py`.
-
-## TTL
-
-Obligatorio en todo paquete. Se decrementa en cada nodo que reenvía. Un
-paquete que llega con `ttl <= 0` se descarta sin importar el tipo (evita
-loops residuales incluso si fallara la deduplicación).
-
-## Reglas por modo
-
-| Modo | Origen de la topología | Reenvío |
-|---|---|---|
-| `dijkstra` | Config estática (`topology_file`), calculada **una sola vez** al iniciar el nodo | Next-hop de la tabla precalculada |
-| `flooding` | No se conoce topología; solo vecinos directos de la config | A todos los vecinos activos excepto quien lo envió, con TTL + dedup |
-| `lsr` | Reconstruida dinámicamente a partir de los LSP recibidos (vía flooding) | LSPs se distribuyen por flooding; mensajes de usuario van por next-hop de Dijkstra sobre la topología reconstruida |
-
-## Compatibilidad
-
-Cualquier cambio a este documento que afecte la interoperabilidad con otros
-grupos (formato de `from`/`to`, convención `to: "*"`, campos nuevos en
-`headers`) debe coordinarse antes de la prueba conjunta y documentarse como
-v1.1, v2, etc., sin romper compatibilidad hacia atrás de forma silenciosa.
+Para evitarlo se recomienda aceptar también un LSP cuyo `seq` esté muy por
+debajo del conocido —por ejemplo, más de 16 unidades—, que es la señal
+inequívoca de un contador reiniciado. Es un añadido a la regla, no una
+relajación: un LSP viejo dentro del rango normal se sigue descartando.

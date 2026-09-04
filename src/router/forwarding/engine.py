@@ -1,19 +1,11 @@
-"""Motor de Forwarding.
-
-Responsable de:
-- Procesar paquetes entrantes (hello -> responder echo; echo -> notificar
-  health check; message -> entregar o reenviar; info -> aplicar LSP y
-  reflood si es nuevo).
-- Enviar paquetes salientes: mensajes de usuario, HELLO, y el LSP propio.
-
-No decide POR SÍ MISMO las rutas (eso es `routing/engine.py`) ni las reglas
-de flooding (`algorithms/flooding.py`): las orquesta. Así se evita duplicar
-lógica entre modos.
-"""
+"""Entrega, forwarding y distribución de LSP según el protocolo compartido."""
 from __future__ import annotations
 
+import json
 import logging
-from typing import Callable, Optional
+import math
+import threading
+from dataclasses import replace
 
 from router.algorithms import flooding
 from router.dedup.cache import DedupCache
@@ -24,24 +16,51 @@ from router.routing.engine import RoutingEngine
 
 logger = logging.getLogger(__name__)
 
-OnMessageDelivered = Callable[[Packet], None]
-OnEchoReceived = Callable[[Packet], None]
-SendFn = Callable[[str, Packet], None]  # (neighbor_id, packet) -> None
+
+def parse_lsp_payload(payload, normalize=lambda value: value):
+    """Recibe lista canónica y variantes: mapa, links, node/cost o JSON textual."""
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (ValueError, RecursionError):
+            return None
+    if not isinstance(payload, dict):
+        return None
+    origin, seq = payload.get("origin"), payload.get("seq")
+    raw = payload.get("neighbors", payload.get("links"))
+    age = payload.get("age_s", 0)
+    if not isinstance(origin, str) or not origin or type(seq) is not int or seq < 0:
+        return None
+    if isinstance(age, bool) or not isinstance(age, (int, float)) or not math.isfinite(age) or age < 0:
+        return None
+    try:
+        origin = normalize(origin)
+    except ValueError:
+        return None
+    if isinstance(raw, dict):
+        pairs = raw.items()
+    elif isinstance(raw, list):
+        pairs = [(n.get("id", n.get("node")), n.get("weight", n.get("cost")))
+                 for n in raw if isinstance(n, dict)]
+    else:
+        return None
+    neighbors = {}
+    for nid, value in pairs:
+        try:
+            cost = float(value)
+            if not isinstance(nid, str) or not nid or isinstance(value, bool) or not math.isfinite(cost) or cost < 0:
+                raise ValueError("vecino/costo inválido")
+            neighbors[normalize(nid)] = cost
+        except (ValueError, TypeError, OverflowError):
+            logger.warning("Vecino/costo inválido en LSP de %s: %r=%r", origin, nid, value)
+    return origin, seq, neighbors, age
 
 
 class ForwardingEngine:
-    def __init__(
-        self,
-        node_id: str,
-        mode: str,
-        neighbor_table: NeighborTable,
-        routing_engine: RoutingEngine,
-        dedup_cache: DedupCache,
-        send_to_neighbor: SendFn,
-        initial_ttl: int = 5,
-        on_message_delivered: Optional[OnMessageDelivered] = None,
-        on_echo_received: Optional[OnEchoReceived] = None,
-    ) -> None:
+    def __init__(self, node_id: str, mode: str, neighbor_table: NeighborTable,
+                 routing_engine: RoutingEngine, dedup_cache: DedupCache, send_to_neighbor,
+                 initial_ttl: int = 16, on_message_delivered=None, on_echo_received=None,
+                 listen_port: int = 5000, normalize_address=lambda value: value) -> None:
         self.node_id = node_id
         self.mode = mode
         self.neighbor_table = neighbor_table
@@ -49,132 +68,124 @@ class ForwardingEngine:
         self.dedup_cache = dedup_cache
         self._send_to_neighbor = send_to_neighbor
         self.initial_ttl = initial_ttl
+        self.listen_port = listen_port
+        self._normalize = normalize_address
         self._on_message_delivered = on_message_delivered
         self._on_echo_received = on_echo_received
+        self._lsdb_synced_with = set()
+        self._sync_lock = threading.Lock()
+        self._announce_lock = threading.Lock()
 
     def _active_neighbor_ids(self) -> list:
-        """Vecinos actualmente activos, para no intentar reenviar por enlaces caídos
-        (evita reenvíos indefinidos/errores hacia un vecino inactivo)."""
-        return list(self.neighbor_table.active_neighbors().keys())
+        return list(self.neighbor_table.active_neighbors())
 
-    # ------------------------------------------------------------------ #
-    # Entrada: un paquete llegó por la conexión asociada a `from_neighbor_id`
-    # ------------------------------------------------------------------ #
-    def handle_packet(self, packet: Packet, from_neighbor_id: str) -> None:
-        if packet.type == "hello":
-            self._handle_hello(packet)
-        elif packet.type == "echo":
-            self._handle_echo(packet)
-        elif packet.type == "message":
-            self._handle_message(packet, from_neighbor_id)
-        elif packet.type == "info":
-            self._handle_info(packet, from_neighbor_id)
-        else:
-            logger.warning("[%s] tipo de paquete desconocido, se ignora: %s", self.node_id, packet.type)
-
-    def _handle_hello(self, packet: Packet) -> None:
-        echo = factory.make_echo(proto=packet.proto, from_=self.node_id, to=packet.from_, hello_payload=packet.payload)
-        logger.debug("[%s] HELLO de %s -> respondo ECHO", self.node_id, packet.from_)
-        self._send_to_neighbor(packet.from_, echo)
-
-    def _handle_echo(self, packet: Packet) -> None:
-        if self._on_echo_received:
-            self._on_echo_received(packet)
-
-    def _handle_message(self, packet: Packet, from_neighbor_id: str) -> None:
-        if self.mode == "flooding":
-            self._handle_message_flooding(packet, from_neighbor_id)
-        else:
-            self._handle_message_routed(packet)
-
-    def _handle_message_flooding(self, packet: Packet, from_neighbor_id: str) -> None:
-        decision = flooding.process_incoming_packet(
-            packet, self.node_id, self._active_neighbor_ids(), from_neighbor_id, self.dedup_cache
-        )
-        if decision.dropped_reason:
-            logger.info("[%s] mensaje %s descartado (%s)", self.node_id, packet.id, decision.dropped_reason)
-            return
-        if decision.deliver_locally:
-            logger.info("[%s] MENSAJE recibido de %s: %r", self.node_id, packet.from_, packet.payload)
-            if self._on_message_delivered:
-                self._on_message_delivered(packet)
-        for neighbor_id in decision.forward_to:
-            logger.info("[%s] flooding: reenvío %s a %s", self.node_id, packet.id, neighbor_id)
-            self._send_to_neighbor(neighbor_id, decision.forwarded_packet)
-
-    def _handle_message_routed(self, packet: Packet) -> None:
-        if packet.to == self.node_id:
-            logger.info("[%s] MENSAJE recibido de %s: %r", self.node_id, packet.from_, packet.payload)
-            if self._on_message_delivered:
-                self._on_message_delivered(packet)
-            return
+    def handle_packet(self, packet: Packet, from_neighbor_id: str | None = None) -> None:
         if packet.ttl <= 0:
-            logger.info("[%s] mensaje %s descartado (ttl_expired)", self.node_id, packet.id)
+            logger.info("[%s] paquete descartado (ttl_expired)", self.node_id)
             return
+        if packet.proto != self.mode:
+            logger.warning("[%s] proto %s distinto del modo %s; se ignora", self.node_id, packet.proto, self.mode)
+            return
+        try:
+            packet = replace(packet, from_=self._normalize(packet.from_), to=self._normalize(packet.to))
+            via = packet.header("via")
+            sender = self._normalize(via) if isinstance(via, str) and via else from_neighbor_id
+        except ValueError:
+            logger.warning("[%s] dirección inválida; se descarta", self.node_id)
+            return
+        if packet.type in ("hello", "echo"):
+            if packet.to != self.node_id or packet.from_ not in self.neighbor_table.all_ids():
+                return
+            if packet.type == "hello":
+                self._send_to_neighbor(packet.from_, factory.make_echo(packet, self.listen_port))
+                self._sync_lsdb_on_first_contact(packet.from_)
+            elif isinstance(packet.payload, dict) and self._on_echo_received:
+                self._on_echo_received(packet)
+        elif packet.type == "message":
+            if self.mode == "flooding":
+                decision = flooding.process_incoming_packet(
+                    packet, self.node_id, self._active_neighbor_ids(), sender, self.dedup_cache
+                )
+                if decision.deliver_locally:
+                    self._deliver(packet)
+                self._send_decision(decision)
+            elif packet.to == self.node_id:
+                self._deliver(packet)
+            elif packet.ttl <= 1:
+                logger.info("[%s] mensaje descartado (ttl_expired)", self.node_id)
+            else:
+                self._send_routed(packet.forwarded_by(self.node_id))
+        elif packet.type == "info" and self.mode == "lsr":
+            parsed = parse_lsp_payload(packet.payload, self._normalize)
+            if parsed is None or packet.to != "*":
+                logger.warning("[%s] LSP inválido; se descarta", self.node_id)
+                return
+            origin, seq, neighbors, age = parsed
+            if self.routing_engine.apply_lsp(origin, seq, neighbors, age):
+                # La identidad LSP es (origin, seq), nunca msg_id.
+                decision = flooding.process_incoming_packet(
+                    packet, self.node_id, self._active_neighbor_ids(), sender, None
+                )
+                self._send_decision(decision)
+
+    def _deliver(self, packet: Packet) -> None:
+        logger.info("[%s] MENSAJE de %s: %r", self.node_id, packet.from_, packet.payload)
+        if self._on_message_delivered:
+            self._on_message_delivered(packet)
+
+    def _send_decision(self, decision) -> None:
+        if decision.dropped_reason:
+            logger.info("[%s] paquete descartado (%s)", self.node_id, decision.dropped_reason)
+        for nid in decision.forward_to:
+            self._send_to_neighbor(nid, decision.forwarded_packet)
+
+    def _send_routed(self, packet: Packet) -> None:
         next_hop = self.routing_engine.next_hop(packet.to)
-        if next_hop is None:
-            logger.warning("[%s] sin ruta hacia %s, se descarta mensaje %s", self.node_id, packet.to, packet.id)
+        if next_hop not in self.neighbor_table.active_neighbors():
+            logger.warning("[%s] sin ruta activa hacia %s; se descarta", self.node_id, packet.to)
             return
-        forwarded = packet.with_ttl_decremented(new_from=self.node_id).with_hop_appended(self.node_id)
-        logger.info("[%s] reenvío %s hacia %s vía next-hop %s", self.node_id, packet.id, packet.to, next_hop)
-        self._send_to_neighbor(next_hop, forwarded)
+        self._send_to_neighbor(next_hop, packet)
 
-    def _handle_info(self, packet: Packet, from_neighbor_id: str) -> None:
-        origin = packet.payload.get("origin")
-        seq = packet.payload.get("seq")
-        neighbors = packet.payload.get("neighbors", {})
-        if origin is None or seq is None:
-            logger.warning("[%s] paquete info con payload inválido, se descarta", self.node_id)
-            return
-
-        applied = self.routing_engine.apply_lsp(origin, seq, neighbors)
-        if not applied:
-            logger.debug("[%s] LSP de %s (seq=%s) descartado por viejo/duplicado", self.node_id, origin, seq)
-            return
-
-        logger.info("[%s] LSP nuevo de %s (seq=%s) aplicado, tabla recalculada", self.node_id, origin, seq)
-        decision = flooding.process_incoming_packet(
-            packet, self.node_id, self._active_neighbor_ids(), from_neighbor_id, self.dedup_cache
-        )
-        if decision.forwarded_packet:
-            for neighbor_id in decision.forward_to:
-                self._send_to_neighbor(neighbor_id, decision.forwarded_packet)
-
-    # ------------------------------------------------------------------ #
-    # Salida: acciones que origina este nodo
-    # ------------------------------------------------------------------ #
     def send_user_message(self, destination: str, text: str) -> None:
-        pkt = factory.make_message(proto=self.mode, from_=self.node_id, to=destination, text=text, ttl=self.initial_ttl)
-        if self.mode == "flooding":
-            decision = flooding.originate_broadcast(pkt, self._active_neighbor_ids(), self.dedup_cache)
-            for neighbor_id in decision.forward_to:
-                self._send_to_neighbor(neighbor_id, decision.forwarded_packet)
+        packet = factory.make_message(self.mode, self.node_id, destination, text, self.initial_ttl)
+        if packet.ttl <= 0:
             return
-
         if destination == self.node_id:
-            logger.info("[%s] mensaje dirigido a mí mismo", self.node_id)
-            if self._on_message_delivered:
-                self._on_message_delivered(pkt)
-            return
-        next_hop = self.routing_engine.next_hop(destination)
-        if next_hop is None:
-            logger.warning("[%s] no hay ruta conocida hacia %s todavía", self.node_id, destination)
-            return
-        self._send_to_neighbor(next_hop, pkt)
+            self._deliver(packet)
+        elif self.mode == "flooding":
+            self._send_decision(flooding.originate_broadcast(packet, self._active_neighbor_ids(), self.dedup_cache))
+        else:
+            self._send_routed(packet)
 
-    def send_hello(self, neighbor_id: str, seq: int) -> None:
-        hello = factory.make_hello(proto=self.mode, from_=self.node_id, to=neighbor_id, seq=seq)
-        self._send_to_neighbor(neighbor_id, hello)
+    def send_hello(self, neighbor_id: str, msg_id: str, t0: float) -> None:
+        packet = factory.make_hello(self.mode, self.node_id, neighbor_id, msg_id, t0, self.listen_port)
+        self._send_to_neighbor(neighbor_id, packet)
 
-    def announce_own_lsp(self) -> None:
-        """Genera y difunde el LSP propio a partir de los vecinos activos actuales."""
+    def _sync_lsdb_on_first_contact(self, neighbor_id: str) -> None:
         if self.mode != "lsr":
             return
-        seq = self.routing_engine.next_own_seq()
-        neighbors = self.neighbor_table.active_neighbors()
-        self.routing_engine.apply_lsp(self.node_id, seq, neighbors)
-        lsp = factory.make_lsp(from_=self.node_id, origin=self.node_id, seq=seq, neighbors=neighbors, ttl=self.initial_ttl)
-        logger.info("[%s] anuncio LSP propio seq=%s vecinos=%s", self.node_id, seq, neighbors)
-        decision = flooding.originate_broadcast(lsp, self._active_neighbor_ids(), self.dedup_cache)
-        for neighbor_id in decision.forward_to:
-            self._send_to_neighbor(neighbor_id, decision.forwarded_packet)
+        with self._sync_lock:
+            if neighbor_id in self._lsdb_synced_with:
+                return
+            self._lsdb_synced_with.add(neighbor_id)
+        self.send_lsdb_snapshot(neighbor_id)
+
+    def forget_lsdb_sync(self, neighbor_id: str) -> None:
+        with self._sync_lock:
+            self._lsdb_synced_with.discard(neighbor_id)
+
+    def send_lsdb_snapshot(self, neighbor_id: str) -> None:
+        for origin, seq, neighbors, age in self.routing_engine.lsdb_snapshot_with_age():
+            packet = factory.make_lsp(self.node_id, origin, seq, neighbors, self.initial_ttl, age)
+            self._send_to_neighbor(neighbor_id, packet)
+
+    def announce_own_lsp(self) -> None:
+        if self.mode != "lsr":
+            return
+        # Captura estado, secuencia y actualización local de manera ordenada.
+        with self._announce_lock:
+            seq = self.routing_engine.next_own_seq()
+            neighbors = self.neighbor_table.active_neighbors()
+            self.routing_engine.apply_lsp(self.node_id, seq, neighbors)
+            packet = factory.make_lsp(self.node_id, self.node_id, seq, neighbors, self.initial_ttl)
+        self._send_decision(flooding.originate_broadcast(packet, self._active_neighbor_ids(), self.dedup_cache))

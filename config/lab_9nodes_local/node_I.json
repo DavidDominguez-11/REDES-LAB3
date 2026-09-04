@@ -1,0 +1,45 @@
+{
+  "_comment": "Ensayo LOCAL de la topologia de la guia: host/port apuntan a localhost. El dia de la demo hay que sustituir 'host' y 'port' de cada vecino por la IP y el puerto reales que anuncie cada grupo.",
+  "node_id": "I",
+  "listen": {
+    "host": "127.0.0.1",
+    "port": 7008
+  },
+  "mode": "lsr",
+  "neighbors": [
+    {
+      "node_id": "A",
+      "host": "127.0.0.1",
+      "port": 7000,
+      "cost": 1
+    },
+    {
+      "node_id": "D",
+      "host": "127.0.0.1",
+      "port": 7003,
+      "cost": 6
+    }
+  ],
+  "params": {
+    "initial_ttl": 16,
+    "hello_interval_sec": 1,
+    "hello_timeout_sec": 0.5,
+    "hello_max_failures": 3,
+    "dedup_cache_ttl_sec": 30,
+    "lsp_refresh_interval_sec": 10,
+    "log_level": "INFO"
+  },
+  "topology_file": "config/topologies/lab_9nodes.json",
+  "network_port": 5000,
+  "addresses": {
+    "A": "127.0.0.1:7000",
+    "B": "127.0.0.1:7001",
+    "C": "127.0.0.1:7002",
+    "D": "127.0.0.1:7003",
+    "E": "127.0.0.1:7004",
+    "F": "127.0.0.1:7005",
+    "G": "127.0.0.1:7006",
+    "H": "127.0.0.1:7007",
+    "I": "127.0.0.1:7008"
+  }
+}

@@ -3,7 +3,8 @@
 Esta guía asume la red de prueba local de 5 nodos
 (`config/local_test_5nodes/`). El día de la prueba conjunta, sustituir estos
 archivos por la configuración real (IPs asignadas, topología acordada con
-los demás grupos) siguiendo el mismo formato.
+los demás grupos) siguiendo el mismo formato. El contrato vigente es
+[protocolo.md](protocolo.md). Todos los nodos deben usar el mismo modo.
 
 ## 0. Preparación
 
@@ -66,13 +67,11 @@ simétricas, sin ciclos).
 En la terminal de E debería aparecer:
 
 ```
-[E] << mensaje de C: hola desde A, esto viaja por la ruta óptima
+[E] << mensaje de A (127.0.0.1:6000): hola desde A, esto viaja por la ruta óptima
 ```
 
-(Se ve `de C`, no `de A`, porque `from` se actualiza en cada salto —
-representa al último reenviador directo. El origen real y la ruta completa
-quedan registrados en `headers[].hops` del paquete, visible en los logs si
-se sube el nivel de log a `DEBUG`.)
+El origen A se conserva en `from`. El salto anterior C viaja en `via` y
+la traza en `trace`: ambos usan IP:puerto, aunque la consola muestre alias.
 
 ## 4. Simulación de caída de un vecino
 
@@ -101,13 +100,46 @@ python -m router.cli --config config/local_test_5nodes/node_C.json
 Tras el primer intercambio exitoso de HELLO/ECHO entre C y sus vecinos
 (unos segundos), la ruta A→E debería volver a ser vía C, costo 7.
 
-## 6. Modo flooding independiente (opcional, para mostrar que no depende de LSR)
+## 6. Modos flooding y dijkstra independientes
 
-Crear (o pedir al ayudante) configuraciones equivalentes con `"mode":
-"flooding"` en vez de `"lsr"`, y repetir el paso 3: el mensaje debe llegar a
-destino igualmente, reenviado por todos los nodos intermedios (no solo por
-la ruta óptima), y detenerse sin reenvíos indefinidos gracias al TTL y la
-deduplicación.
+La guía del laboratorio pide poder levantar la red en `flooding` o en
+`dijkstra` como algoritmo de la red, no solo como piezas internas de LSR. No
+hace falta duplicar configuraciones: `--mode` sobreescribe el `mode` del JSON.
+
+```bash
+# En las 5 terminales, con el mismo config de cada nodo
+python -m router.cli --config config/local_test_5nodes/node_A.json --mode flooding
+```
+
+Repetir el paso 3: el mensaje llega a destino igualmente, reenviado por todos
+los nodos intermedios (no solo por la ruta óptima), y se detiene sin reenvíos
+indefinidos gracias al TTL y la deduplicación. `routes` sale vacío, porque en
+flooding no hay tabla de ruteo.
+
+```bash
+python -m router.cli --config config/local_test_5nodes/node_A.json --mode dijkstra
+```
+
+En `dijkstra` la tabla se calcula una sola vez al arrancar desde
+`config/topologies/local_test_5nodes.json`, así que `routes` muestra las
+mismas rutas que LSR ya convergido (A→E vía C, costo 7) pero **no** reacciona
+a la caída de un nodo: es el contraste útil para el reporte.
+
+## Conexión con otros grupos
+
+Parte de `config/example_node.json`: coloca tu IP en `advertised_host`,
+mantén `listen.host: "0.0.0.0"` y actualiza las IPs, puertos y costos de
+los vecinos. El puerto común por defecto es 5000. Los alias `addresses`
+son opcionales; actualízalos si quieres enviar usando nombres.
+
+```text
+[A]> send 10.0.0.7:5000 hola desde mi grupo
+```
+
+La versión y CRC32 discrepantes se registran sin bloquear el tráfico.
+Un paquete malformado o una línea mayor de 65536 bytes se descartan.
+Revisa el log si no llega un mensaje: puede faltar una ruta, un enlace
+estar caído o haberse agotado TTL. No hay ACK ni ERROR en el protocolo.
 
 ## Notas para el reporte
 
