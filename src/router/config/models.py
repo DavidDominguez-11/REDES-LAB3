@@ -4,22 +4,30 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from router.protocol.address import endpoint
+
 
 @dataclass(frozen=True)
 class NeighborConfig:
     node_id: str
     host: str
     port: int
-    cost: int
+    cost: int | float
+
+    @property
+    def address(self) -> str:
+        return endpoint(self.host, self.port)
 
 
 @dataclass(frozen=True)
 class NodeParams:
-    initial_ttl: int = 5
+    initial_ttl: int = 16
     hello_interval_sec: float = 2.0
     hello_timeout_sec: float = 1.0
     hello_max_failures: int = 3
     dedup_cache_ttl_sec: float = 30.0
+    lsp_interval_sec: float = 10.0
+    lsp_expiry_sec: float = 30.0
     log_level: str = "INFO"
 
 

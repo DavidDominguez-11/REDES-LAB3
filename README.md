@@ -119,7 +119,7 @@ src/router/
   transport/   Framing NDJSON + TCP (servidor y conexiones salientes reconectables)
   config/      Modelos y carga de configuración de nodo / topología
   neighbors/   Tabla de vecinos + health check (HELLO/ECHO, detección de caída/recuperación)
-  dedup/       Caché de deduplicación de paquetes por id
+  dedup/       Caché de deduplicación de paquetes por msg_id
   algorithms/  dijkstra.py, flooding.py, lsr.py — independientes y reutilizables entre sí
   routing/     Fachada RoutingEngine (unifica dijkstra estático / lsr dinámico / sin tabla en flooding)
   forwarding/  Motor de forwarding: conecta transporte + dedup + routing + flooding
@@ -130,27 +130,20 @@ tests/
   integration/  Nodos reales en localhost: convergencia, ruta óptima, caída/recuperación, flooding sin loops
 ```
 
-## Limitaciones conocidas / pendientes para la red del aula
+## Notas para la red del aula
 
-- **Formato de `from`/`to`**: en esta implementación, `from` se actualiza en
-  cada salto para representar al emisor directo (ver
-  [`docs/protocolo.md`](docs/protocolo.md)), y los valores usados en pruebas
-  locales son IDs lógicos (`"A"`, `"B"`, ...). El día de la demo, si los
-  demás grupos usan IP:puerto en vez de IDs lógicos, hay que actualizar
-  únicamente la capa de configuración/mapeo de vecinos — la lógica de
-  algoritmos no depende del formato de estos campos.
-- **Convención de broadcast `to: "*"`**: usada para los LSP. Debe
-  confirmarse con los demás grupos el día de la prueba; si no la aceptan,
-  es un cambio acotado a `protocol/factory.py` y `algorithms/flooding.py`.
+- El formato de cable usa direcciones `IP:puerto`; `from` conserva el origen
+  absoluto y `via` identifica el salto anterior al reenviar.
+- `to: "*"` es la difusión lógica definida para los LSP `info`.
 - **Topología real del salón**: la topología usada aquí (`local_test_5nodes`)
   es de prueba local. La imagen de topología incluida en la guía del
   laboratorio llegó truncada (el `base64` del SVG se corta a mitad de
   archivo) y no fue posible recuperar los pesos/aristas reales; hay que
   sustituir `config/topologies/local_test_5nodes.json` (o crear un archivo
   nuevo) con la topología e IPs que se asignen en clase.
-- **Interoperabilidad**: no se ha probado contra implementaciones de otros
-  grupos; el protocolo está documentado para facilitar la coordinación,
-  pero la validación real solo puede hacerse el día de la prueba conjunta.
+- **Interoperabilidad**: el protocolo está documentado en
+  [`docs/protocolo.md`](docs/protocolo.md); la validación contra otros grupos
+  depende de la prueba conjunta.
 - **Recuperación de enlaces individuales vs. nodo completo**: las pruebas de
   caída/recuperación simulan la caída de un **nodo completo** (se detiene su
   proceso), no de un enlace específico entre dos nodos activos. El

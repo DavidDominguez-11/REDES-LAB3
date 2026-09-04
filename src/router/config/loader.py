@@ -6,11 +6,13 @@ como referencia de formato.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 from router.config.models import NeighborConfig, NodeConfig, NodeParams, Topology
 
 VALID_MODES = {"dijkstra", "flooding", "lsr"}
+DEFAULT_PORT = 5000
 
 
 class ConfigError(ValueError):
@@ -21,6 +23,16 @@ def _require(data: dict, key: str, ctx: str):
     if key not in data:
         raise ConfigError(f"Falta el campo requerido '{key}' en {ctx}")
     return data[key]
+
+
+def _cost(value, ctx: str) -> int | float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"costo inválido en {ctx}: {value!r}") from exc
+    if not math.isfinite(result) or result < 0:
+        raise ConfigError(f"costo inválido en {ctx}: {value!r}")
+    return int(result) if result.is_integer() else result
 
 
 def load_node_config(path: str | Path) -> NodeConfig:
@@ -35,16 +47,23 @@ def load_node_config(path: str | Path) -> NodeConfig:
     node_id = _require(raw, "node_id", str(path))
     listen = _require(raw, "listen", str(path))
     host = _require(listen, "host", f"listen de {path}")
-    port = _require(listen, "port", f"listen de {path}")
+    port = listen.get("port", DEFAULT_PORT)
     mode = _require(raw, "mode", str(path))
     if mode not in VALID_MODES:
         raise ConfigError(f"mode inválido '{mode}' en {path}; debe ser uno de {VALID_MODES}")
 
     neighbors = []
     for n in raw.get("neighbors", []):
-        for key in ("node_id", "host", "port", "cost"):
+        for key in ("node_id", "host", "cost"):
             _require(n, key, f"neighbors de {path}")
-        neighbors.append(NeighborConfig(n["node_id"], n["host"], int(n["port"]), int(n["cost"])))
+        neighbors.append(
+            NeighborConfig(
+                n["node_id"],
+                n["host"],
+                int(n.get("port", port)),
+                _cost(n["cost"], f"neighbors de {path}"),
+            )
+        )
 
     params_raw = raw.get("params", {})
     default_params = NodeParams()
@@ -54,6 +73,8 @@ def load_node_config(path: str | Path) -> NodeConfig:
         hello_timeout_sec=float(params_raw.get("hello_timeout_sec", default_params.hello_timeout_sec)),
         hello_max_failures=int(params_raw.get("hello_max_failures", default_params.hello_max_failures)),
         dedup_cache_ttl_sec=float(params_raw.get("dedup_cache_ttl_sec", default_params.dedup_cache_ttl_sec)),
+        lsp_interval_sec=float(params_raw.get("lsp_interval_sec", default_params.lsp_interval_sec)),
+        lsp_expiry_sec=float(params_raw.get("lsp_expiry_sec", default_params.lsp_expiry_sec)),
         log_level=str(params_raw.get("log_level", default_params.log_level)),
     )
 
@@ -92,7 +113,7 @@ def load_topology(path: str | Path) -> Topology:
     for link in links:
         for key in ("a", "b", "cost"):
             _require(link, key, f"links de {path}")
-        a, b, cost = link["a"], link["b"], int(link["cost"])
+        a, b, cost = link["a"], link["b"], _cost(link["cost"], f"links de {path}")
         if a not in edges or b not in edges:
             raise ConfigError(f"Link {a}-{b} referencia un nodo no declarado en 'nodes'")
         edges[a][b] = cost

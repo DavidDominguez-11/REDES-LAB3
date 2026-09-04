@@ -1,62 +1,130 @@
-"""Link State Routing (LSR).
-
-LSR = Flooding (para distribuir los LSP a toda la red) + Dijkstra (para
-calcular rutas óptimas sobre la topología reconstruida a partir de los LSP
-recibidos). Este módulo NO reimplementa flooding ni dijkstra: los importa
-y reutiliza (ver requisito de modularidad de la guía).
-
-Un LSP (Link State Packet) es el payload de un paquete `type: info`:
-    {"origin": "A", "seq": 7, "neighbors": {"B": 4, "C": 1}}
-
-Regla de frescura: un LSP con `seq` menor o igual al último visto de ese
-`origin` se descarta (ni se aplica, ni se reenvía, ni dispara recálculo).
-Esto evita procesar/propagar LSPs viejos o repetidos indefinidamente.
-"""
+"""Link State Routing: LSDB con expiración y Dijkstra sobre los LSP."""
 from __future__ import annotations
 
+import json
+import threading
+import time
 from dataclasses import dataclass, field
+from typing import Any
 
 from router.algorithms.dijkstra import RouteEntry, build_routing_table
+
+
+def normalize_neighbors(value: Any) -> dict[str, int | float]:
+    """Acepta las variantes de ``neighbors`` definidas para recepción."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+
+    if isinstance(value, dict):
+        if "neighbors" in value:
+            return normalize_neighbors(value["neighbors"])
+        if "links" in value:
+            return normalize_neighbors(value["links"])
+        result = {}
+        for node_id, weight in value.items():
+            if isinstance(weight, (int, float)) and not isinstance(weight, bool):
+                result[str(node_id)] = weight
+        return result
+
+    if isinstance(value, list):
+        result = {}
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            node_id = item.get("id", item.get("node"))
+            weight = item.get("weight", item.get("cost"))
+            if isinstance(node_id, str) and isinstance(weight, (int, float)) and not isinstance(weight, bool):
+                result[node_id] = weight
+        return result
+    return {}
+
+
+def parse_lsp_payload(payload: Any) -> tuple[str, int, float, dict[str, int | float]] | None:
+    """Valida y normaliza el payload de un anuncio LSP."""
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(payload, dict):
+        return None
+    origin = payload.get("origin")
+    seq = payload.get("seq")
+    if not isinstance(origin, str) or not origin:
+        return None
+    if not isinstance(seq, int) or isinstance(seq, bool):
+        return None
+    age_s = payload.get("age_s", 0)
+    if not isinstance(age_s, (int, float)) or isinstance(age_s, bool):
+        age_s = 0.0
+    neighbors = normalize_neighbors(payload.get("neighbors", payload.get("links", {})))
+    return origin, seq, float(age_s), neighbors
 
 
 @dataclass
 class LspEntry:
     seq: int
     neighbors: dict
+    received_at: float = field(default_factory=time.monotonic)
 
 
 class LinkStateDatabase:
-    """Almacena el último LSP conocido de cada origen."""
+    """Último LSP por origen, con expiración local configurable."""
 
-    def __init__(self) -> None:
+    def __init__(self, expiry_sec: float = 30.0, clock=time.monotonic) -> None:
         self._entries: dict[str, LspEntry] = {}
+        self._expiry_sec = expiry_sec
+        self._clock = clock
+        self._lock = threading.RLock()
 
-    def update(self, origin: str, seq: int, neighbors: dict) -> bool:
-        """Aplica el LSP si es más nuevo que el almacenado. Devuelve True si se aplicó."""
-        current = self._entries.get(origin)
-        if current is not None and seq <= current.seq:
-            return False  # LSP viejo o repetido: se ignora
-        self._entries[origin] = LspEntry(seq=seq, neighbors=dict(neighbors))
-        return True
+    def update(self, origin: str, seq: int, neighbors: Any, received_at: float | None = None) -> bool:
+        normalized = normalize_neighbors(neighbors)
+        with self._lock:
+            current = self._entries.get(origin)
+            if current is not None and not (seq > current.seq or current.seq - seq > 16):
+                return False
+            self._entries[origin] = LspEntry(
+                seq=seq,
+                neighbors=dict(normalized),
+                received_at=self._clock() if received_at is None else received_at,
+            )
+            return True
+
+    def expire(self, now: float | None = None) -> list[str]:
+        now = self._clock() if now is None else now
+        with self._lock:
+            expired = [
+                origin
+                for origin, entry in self._entries.items()
+                if now - entry.received_at >= self._expiry_sec
+            ]
+            for origin in expired:
+                del self._entries[origin]
+            return expired
 
     def get_seq(self, origin: str) -> int:
-        entry = self._entries.get(origin)
-        return entry.seq if entry else -1
+        with self._lock:
+            entry = self._entries.get(origin)
+            return entry.seq if entry else -1
 
     def known_origins(self) -> list:
-        return list(self._entries.keys())
+        with self._lock:
+            return list(self._entries.keys())
 
     def to_edges(self) -> dict:
-        """Adyacencia lista para pasar a `dijkstra.build_routing_table`."""
-        return {origin: dict(entry.neighbors) for origin, entry in self._entries.items()}
+        with self._lock:
+            return {origin: dict(entry.neighbors) for origin, entry in self._entries.items()}
 
 
 class LsrRoutingEngine:
-    """Orquesta LSDB + Dijkstra para un nodo operando en modo `lsr`."""
+    """Orquesta LSDB + Dijkstra en modo ``lsr``."""
 
-    def __init__(self, node_id: str) -> None:
+    def __init__(self, node_id: str, expiry_sec: float = 30.0, clock=time.monotonic) -> None:
         self.node_id = node_id
-        self.lsdb = LinkStateDatabase()
+        self.lsdb = LinkStateDatabase(expiry_sec=expiry_sec, clock=clock)
         self.table: dict = {}
         self._own_seq = 0
 
@@ -64,15 +132,23 @@ class LsrRoutingEngine:
         self._own_seq += 1
         return self._own_seq
 
-    def apply_lsp(self, origin: str, seq: int, neighbors: dict) -> bool:
-        """Aplica un LSP recibido (o propio). Si es nuevo, recalcula la tabla.
-
-        Devuelve True si el LSP era nuevo (y por lo tanto debe re-flood-earse).
-        """
-        applied = self.lsdb.update(origin, seq, neighbors)
+    def apply_lsp(
+        self,
+        origin: str,
+        seq: int,
+        neighbors: Any,
+        received_at: float | None = None,
+    ) -> bool:
+        applied = self.lsdb.update(origin, seq, neighbors, received_at=received_at)
         if applied:
             self._recompute()
         return applied
+
+    def expire_lsp(self, now: float | None = None) -> list[str]:
+        expired = self.lsdb.expire(now)
+        if expired:
+            self._recompute()
+        return expired
 
     def _recompute(self) -> None:
         edges = self.lsdb.to_edges()

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 class RouteEntry:
     destination: str
     next_hop: str
-    cost: int
+    cost: int | float
 
 
 def shortest_paths(source: str, edges: dict) -> dict:
@@ -75,5 +75,6 @@ def build_routing_table(source: str, edges: dict) -> dict:
         if dest == source:
             continue
         next_hop = path[1] if len(path) > 1 else dest
-        table[dest] = RouteEntry(destination=dest, next_hop=next_hop, cost=int(cost))
+        normalized_cost = int(cost) if float(cost).is_integer() else cost
+        table[dest] = RouteEntry(destination=dest, next_hop=next_hop, cost=normalized_cost)
     return table

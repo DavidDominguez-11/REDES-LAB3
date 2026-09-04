@@ -12,11 +12,18 @@ from router.config.models import Topology
 
 
 class RoutingEngine:
-    def __init__(self, node_id: str, mode: str, static_topology: Topology | None = None) -> None:
+    def __init__(
+        self,
+        node_id: str,
+        mode: str,
+        static_topology: Topology | None = None,
+        lsp_expiry_sec: float = 30.0,
+    ) -> None:
         self.node_id = node_id
         self.mode = mode
         self._static_table: dict = {}
         self._lsr: LsrRoutingEngine | None = None
+        self._aliases: dict[str, str] = {}
 
         if mode == "dijkstra":
             if static_topology is None:
@@ -25,13 +32,14 @@ class RoutingEngine:
             # es estático, aunque en la práctica se use dentro de LSR.
             self._static_table = build_routing_table(node_id, static_topology.edges)
         elif mode == "lsr":
-            self._lsr = LsrRoutingEngine(node_id)
+            self._lsr = LsrRoutingEngine(node_id, expiry_sec=lsp_expiry_sec)
         elif mode == "flooding":
             pass  # sin tabla: el forwarding usa algorithms.flooding directamente
         else:
             raise ValueError(f"modo desconocido: {mode}")
 
     def next_hop(self, destination: str) -> str | None:
+        destination = self._aliases.get(destination, destination)
         if self.mode == "dijkstra":
             entry = self._static_table.get(destination)
         elif self.mode == "lsr":
@@ -48,11 +56,20 @@ class RoutingEngine:
             return dict(self._lsr.table)
         return {}
 
+    def add_alias(self, alias: str, canonical: str) -> None:
+        """Registra nombres de configuración alternativos para un nodo."""
+        self._aliases[alias] = canonical
+
     # --- Solo aplica en modo lsr ---
-    def apply_lsp(self, origin: str, seq: int, neighbors: dict) -> bool:
+    def apply_lsp(self, origin: str, seq: int, neighbors: dict, received_at: float | None = None) -> bool:
         if self._lsr is None:
             raise RuntimeError("apply_lsp solo es válido en modo 'lsr'")
-        return self._lsr.apply_lsp(origin, seq, neighbors)
+        return self._lsr.apply_lsp(origin, seq, neighbors, received_at=received_at)
+
+    def expire_lsp(self, now: float | None = None) -> list[str]:
+        if self._lsr is None:
+            return []
+        return self._lsr.expire_lsp(now)
 
     def next_own_seq(self) -> int:
         if self._lsr is None:
