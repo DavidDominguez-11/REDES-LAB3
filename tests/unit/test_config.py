@@ -8,7 +8,7 @@ REPO_ROOT = __import__("pathlib").Path(__file__).resolve().parents[2]
 
 
 def test_load_example_node_config():
-    cfg = load_node_config(REPO_ROOT / "config" / "example_node.json")
+    cfg = load_node_config(REPO_ROOT / "config" / "node_template.json")
     assert cfg.node_id == "A"
     assert cfg.host == "127.0.0.1"
     assert cfg.port == 6000
