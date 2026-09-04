@@ -11,6 +11,11 @@ from router.transport.ndjson import LineBuffer, encode_line
 logger = logging.getLogger(__name__)
 
 
+def _log_received_chunk(peer: str, chunk: bytes) -> None:
+    """Muestra exactamente cada bloque de bytes recibido por un socket TCP."""
+    logger.info("[SOCKET RX] peer=%s bytes=%d data=%r", peer, len(chunk), chunk)
+
+
 def _close(sock) -> None:
     if sock is not None:
         try:
@@ -99,6 +104,7 @@ class TcpServer:
                 chunk = conn.recv(4096)
                 if not chunk:
                     break
+                _log_received_chunk(f"{addr[0]}:{addr[1]}", chunk)
                 for line in buf.feed(chunk):
                     _handle_line(line, receive, self._on_malformed)
         except OSError:
@@ -142,6 +148,7 @@ class NeighborLink:
                 chunk = sock.recv(4096)
                 if not chunk:
                     break
+                _log_received_chunk(f"{self._host}:{self._port}", chunk)
                 for line in buf.feed(chunk):
                     _handle_line(line, self._on_packet)
         except OSError:
